@@ -8,7 +8,6 @@ from discord.ext import commands
 TOKEN = os.environ["TOKEN"]
 SERVER_ID = int(os.environ["SERVER_ID"])
 CHANNEL_ID = int(os.environ["CHANNEL_ID"])
-# ha nem kell role, töröld ki ezt a sort és a give_role hívást
 ROLE_ID = int(os.environ.get("ROLE_ID", "0"))  # optional
 PORT = int(os.environ.get("PORT", "8080"))
 
@@ -22,12 +21,19 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ===== API =====
 app = FastAPI()
 queue: asyncio.Queue = asyncio.Queue()
-
 _last_payload = None
+
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "queue_size": queue.qsize(), "last_payload": _last_payload}
+    return {
+        "ok": True,
+        "bot_ready": bot.is_ready(),
+        "queue_size": queue.qsize(),
+        "last_payload": _last_payload,
+        "guilds": [g.id for g in bot.guilds],
+    }
+
 
 @app.post("/queue")
 async def enqueue(request: Request):
@@ -37,14 +43,25 @@ async def enqueue(request: Request):
     await queue.put(data)
     return {"status": "queued", "queue_size": queue.qsize()}
 
+
+@bot.event
+async def on_ready():
+    print(f"✅ Discord logged in as: {bot.user} | guilds={[g.id for g in bot.guilds]}")
+
+
 async def send_dm(user_id: int, result: str):
     user = await bot.fetch_user(user_id)
     await user.send(f"Teszt eredményed: {result}")
 
+
 async def send_channel_message(user_id: int, result: str):
     channel = bot.get_channel(CHANNEL_ID)
-    if channel:
-        await channel.send(f"<@{user_id}> Teszt eredmény: {result}")
+    if channel is None:
+        # ha nincs cache-ben
+        channel = await bot.fetch_channel(CHANNEL_ID)
+
+    await channel.send(f"<@{user_id}> Teszt eredmény: {result}")
+
 
 async def give_role(user_id: int):
     if ROLE_ID == 0:
@@ -60,11 +77,13 @@ async def give_role(user_id: int):
         print(f"❌ Role not found. ROLE_ID={ROLE_ID}")
         return
 
-    member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+    member = guild.get_member(user_id)
+    if member is None:
+        member = await guild.fetch_member(user_id)
 
     me = guild.me or await guild.fetch_member(bot.user.id)
     if me.top_role <= role:
-        print(f"❌ Role hierarchy: bot top_role ({me.top_role}) <= target role ({role})")
+        print(f"❌ Role hierarchy: bot top_role ({me.top_role.id}) <= target role ({role.id})")
         return
 
     if role in member.roles:
@@ -74,10 +93,9 @@ async def give_role(user_id: int):
     await member.add_roles(role, reason="Webhook role assign")
     print(f"✅ Role added: {member} -> {role.name}")
 
-async def worker_loop():
-    await bot.wait_until_ready()
-    print("✅ Queue worker started")
 
+async def worker_loop():
+    print("✅ Queue worker started")
     while True:
         data = await queue.get()
         try:
@@ -89,7 +107,6 @@ async def worker_loop():
             await send_dm(discord_id, result)
             await send_channel_message(discord_id, result)
 
-            # csak ha sikeres – írd át ha más szöveg jön
             if result.lower() in ["sikeres", "success", "ok", "pass", "true", "1"]:
                 await give_role(discord_id)
             else:
@@ -100,14 +117,20 @@ async def worker_loop():
         finally:
             queue.task_done()
 
-@app.on_event("startup")
-async def on_startup():
-    # bot indítása háttérben
-    asyncio.create_task(bot.start(TOKEN))
-    # queue worker indítása
+
+async def start_discord_and_worker():
+    # ✅ biztos init: login -> connect külön
+    await bot.login(TOKEN)
+    asyncio.create_task(bot.connect())  # nem blokkol
+    await bot.wait_until_ready()        # innentől már biztonságos
     asyncio.create_task(worker_loop())
 
-# Railway miatt kell, hogy legyen webserver
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(start_discord_and_worker())
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
