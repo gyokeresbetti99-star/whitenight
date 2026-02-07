@@ -7,7 +7,6 @@ import discord
 from discord.ext import commands
 import uvicorn
 
-# ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
 
 # ===== ENV =====
@@ -41,9 +40,10 @@ async def queue_endpoint(request: Request):
 @bot.event
 async def on_ready():
     print(f"✅ Discord logged in as: {bot.user} | guilds={[g.id for g in bot.guilds]}", flush=True)
+    # 🔥 ITT INDÍTJUK a feldolgozót, csak akkor amikor a bot már ready
+    bot.loop.create_task(process_queue_forever())
 
 async def process_queue_forever():
-    await bot.wait_until_ready()
     while True:
         data = await queue.get()
         try:
@@ -109,19 +109,15 @@ async def give_role(user_id: int):
         print(f"❌ ROLE error: {e}", flush=True)
 
 async def main():
-    # start queue processor
-    asyncio.create_task(process_queue_forever())
-
-    # start discord bot
-    bot_task = asyncio.create_task(bot.start(TOKEN))
-
-    # start uvicorn ASYNC (ugyanazon a loopon!)
+    # uvicorn ASYNC ugyanazon a loopon
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
     server = uvicorn.Server(config)
+
     api_task = asyncio.create_task(server.serve())
+    bot_task = asyncio.create_task(bot.start(TOKEN))
 
     done, pending = await asyncio.wait(
-        {bot_task, api_task},
+        {api_task, bot_task},
         return_when=asyncio.FIRST_EXCEPTION
     )
 
