@@ -1,6 +1,6 @@
 import os
 import asyncio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 import discord
 from discord.ext import commands
 
@@ -13,8 +13,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 # ===== DISCORD =====
 intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
+intents.members = True          # role-hoz kellhet
+intents.message_content = True  # nem kötelező ehhez, de maradhat
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -35,13 +35,29 @@ async def health():
     }
 
 
-@app.post("/queue")
-async def enqueue(request: Request):
+async def _enqueue_data(data: dict):
     global _last_payload
-    data = await request.json()
     _last_payload = data
     await queue.put(data)
+
+
+@app.post("/queue")
+async def enqueue(request: Request):
+    data = await request.json()
+    await _enqueue_data(data)
     return {"status": "queued", "queue_size": queue.qsize()}
+
+
+# ✅ ÚJ: webhook endpoint (ugyanaz, mint a queue)
+@app.post("/webhook")
+async def webhook(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    await _enqueue_data(data)
+    return {"status": "ok", "queued": True, "queue_size": queue.qsize()}
 
 
 @bot.event
@@ -58,13 +74,13 @@ async def send_channel_message(user_id: int, result: str):
     channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
         channel = await bot.fetch_channel(CHANNEL_ID)
-
     await channel.send(f"<@{user_id}> Teszt eredmény: {result}")
 
 
 async def give_role(user_id: int):
     if ROLE_ID == 0:
-        return  # nincs role beállítva
+        print("ℹ️ ROLE_ID=0 -> skipping role")
+        return
 
     guild = bot.get_guild(SERVER_ID)
     if not guild:
@@ -98,23 +114,33 @@ async def worker_loop():
     while True:
         data = await queue.get()
         try:
-            discord_id = int(data.get("discordId"))
-            result = str(data.get("result", ""))
+            # ⚠️ discordId lehet string -> tisztítsuk
+            raw_id = data.get("discordId")
+            discord_id = int(str(raw_id).strip())
+            result = str(data.get("result", "")).strip()
 
-            print(f"📩 QUEUE item: discordId={discord_id}, result={result}")
+            print(f"📩 QUEUE item: discordId={discord_id}, result={result}, raw={data}")
 
-            await send_dm(discord_id, result)
-            await send_channel_message(discord_id, result)
+            # DM
+            try:
+                await send_dm(discord_id, result)
+                print("✅ DM sent")
+            except Exception as e:
+                print(f"❌ DM failed: {e}")
 
-            # ✅ JAVÍTÁS: "Sikeres TGF!" is legyen siker
-            normalized = str(result).strip().lower()
-            is_success = (
-                "sikeres" in normalized
-                or normalized in ["success", "ok", "pass", "true", "1"]
-            )
+            # Channel
+            try:
+                await send_channel_message(discord_id, result)
+                print("✅ Channel message sent")
+            except Exception as e:
+                print(f"❌ Channel message failed: {e}")
 
-            if is_success:
-                await give_role(discord_id)
+            # Role
+            if result.lower() in ["sikeres", "success", "ok", "pass", "true", "1"]:
+                try:
+                    await give_role(discord_id)
+                except Exception as e:
+                    print(f"❌ Role failed: {e}")
             else:
                 print("ℹ️ Not successful -> no role")
 
@@ -125,10 +151,9 @@ async def worker_loop():
 
 
 async def start_discord_and_worker():
-    # ✅ biztos init: login -> connect külön
     await bot.login(TOKEN)
-    asyncio.create_task(bot.connect())  # nem blokkol
-    await bot.wait_until_ready()        # innentől már biztonságos
+    asyncio.create_task(bot.connect())
+    await bot.wait_until_ready()
     asyncio.create_task(worker_loop())
 
 
