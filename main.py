@@ -57,7 +57,6 @@ async def send_dm(user_id: int, result: str):
 async def send_channel_message(user_id: int, result: str):
     channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
-        # ha nincs cache-ben
         channel = await bot.fetch_channel(CHANNEL_ID)
 
     await channel.send(f"<@{user_id}> Teszt eredmény: {result}")
@@ -107,7 +106,14 @@ async def worker_loop():
             await send_dm(discord_id, result)
             await send_channel_message(discord_id, result)
 
-            if result.lower() in ["sikeres", "success", "ok", "pass", "true", "1"]:
+            # ✅ JAVÍTÁS: "Sikeres TGF!" is legyen siker
+            normalized = str(result).strip().lower()
+            is_success = (
+                "sikeres" in normalized
+                or normalized in ["success", "ok", "pass", "true", "1"]
+            )
+
+            if is_success:
                 await give_role(discord_id)
             else:
                 print("ℹ️ Not successful -> no role")
