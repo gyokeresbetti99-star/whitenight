@@ -34,16 +34,6 @@ async def webhook(request: Request):
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(bot_queue_url, json=data)
-        return {
-            "status": "ok",
-            "forward_to": bot_queue_url,
-            "forward_status": r.status_code,
-            "forward_body": (r.text[:300] if r.text else "")
-        }
+        return {"status": "ok", "forward_to": bot_queue_url, "forward_status": r.status_code, "forward_body": (r.text[:300] if r.text else "")}
     except Exception as e:
-        return {
-            "status": "error",
-            "forward_to": bot_queue_url,
-            "error_type": type(e).__name__,
-            "error": str(e)
-        }
+        return {"status": "error", "forward_to": bot_queue_url, "error_type": type(e).__name__, "error": str(e)}
