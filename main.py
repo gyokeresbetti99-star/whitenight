@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+
 from fastapi import FastAPI, Request
 import discord
 from discord.ext import commands
@@ -39,17 +40,17 @@ async def queue_endpoint(request: Request):
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot ready: {bot.user} | guilds={[g.id for g in bot.guilds]}", flush=True)
-    bot.loop.create_task(process_queue())
+    print(f"✅ Discord logged in as: {bot.user} | guilds={[g.id for g in bot.guilds]}", flush=True)
 
-async def process_queue():
+async def process_queue_forever():
+    await bot.wait_until_ready()
     while True:
         data = await queue.get()
         try:
             user_id = int(data.get("discordId"))
             result = data.get("result")
 
-            print(f"📩 QUEUE: user_id={user_id} result={result}", flush=True)
+            print(f"📩 QUEUE received: user_id={user_id} result={result}", flush=True)
 
             # DM
             try:
@@ -59,7 +60,7 @@ async def process_queue():
             except Exception as e:
                 print(f"❌ DM error: {e}", flush=True)
 
-            # Channel
+            # Channel message
             try:
                 channel = bot.get_channel(CHANNEL_ID)
                 if channel:
@@ -70,12 +71,12 @@ async def process_queue():
             except Exception as e:
                 print(f"❌ Channel error: {e}", flush=True)
 
-            # Role only on success
+            # Role only if success
             if str(result).lower() in ["sikeres", "success", "ok", "pass", "true", "1"]:
                 await give_role(user_id)
 
         except Exception as e:
-            print(f"❌ Queue process error: {e}", flush=True)
+            print(f"❌ Queue processing error: {e}", flush=True)
 
 async def give_role(user_id: int):
     try:
@@ -90,8 +91,8 @@ async def give_role(user_id: int):
             print(f"❌ Role not found ROLE_ID={ROLE_ID}", flush=True)
             return
 
-        bot_member = guild.get_member(bot.user.id) or await guild.fetch_member(bot.user.id)
-        if bot_member.top_role <= role:
+        me = guild.get_member(bot.user.id) or await guild.fetch_member(bot.user.id)
+        if me.top_role <= role:
             print("❌ Role hierarchy issue: bot role too low", flush=True)
             return
 
@@ -107,13 +108,27 @@ async def give_role(user_id: int):
     except Exception as e:
         print(f"❌ ROLE error: {e}", flush=True)
 
-async def start_discord():
-    await bot.start(TOKEN)
+async def main():
+    # start queue processor
+    asyncio.create_task(process_queue_forever())
 
-def main():
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_discord())
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    # start discord bot
+    bot_task = asyncio.create_task(bot.start(TOKEN))
+
+    # start uvicorn ASYNC (ugyanazon a loopon!)
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
+    server = uvicorn.Server(config)
+    api_task = asyncio.create_task(server.serve())
+
+    done, pending = await asyncio.wait(
+        {bot_task, api_task},
+        return_when=asyncio.FIRST_EXCEPTION
+    )
+
+    for task in done:
+        exc = task.exception()
+        if exc:
+            raise exc
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
